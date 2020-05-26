@@ -1,0 +1,113 @@
+#!/bin/sh
+
+# NOT adding a switch for egit, if you want debug edit this script or one of the below config files
+EGIT_DEBUG=0
+
+# Configuration files loaded by egit
+# SEE BELOW FOR SYS_EGIT_CONF
+USR_EGIT_CONF="$HOME/egit.conf"
+DIR_EGIT_CONF="./.egit.conf"
+
+# Default values inside this script
+DEFAULT_EGIT_WORK="/tmp/egit"
+
+say()
+{
+  printf "%s" "$1"
+  shift
+  if [ -n "$1" ]; then
+    printf " %s" "$@"
+  fi
+  printf "\n"
+}
+
+err()
+{
+  say "ERROR:" $@
+}
+
+fail()
+{
+  say "ERROR:" $@
+  exit 1
+}
+
+warn()
+{
+  say "WARNING:" $@
+}
+
+dbg()
+{
+  [ "$EGIT_DEBUG" -ge "1" ] && say $@
+}
+
+# Figure out where the system egit config should be
+EGIT_BINDIR="$(readlink -f $(dirname $0))"
+if [ "$(expr "$EGIT_BINDIR" : "/usr/bin/*")" -gt 0 ] || [ "$(expr "$EGIT_BINDIR" : "/bin/*")" -gt 0 ] ; then
+  SYS_EGIT_CONF="/etc/egit.conf"
+  dbg "Using installed sys config: $SYS_EGIT_CONF"
+else
+  SYS_EGIT_CONF="$EGIT_BINDIR/egit.conf"
+  dbg "Using dev sys config: $SYS_EGIT_CONF"
+fi
+
+# Parse config files in order of precedence
+if [ -f "$SYS_EGIT_CONF" ]; then
+  dbg "Parsing $SYS_EGIT_CONF"
+  . "$SYS_EGIT_CONF"
+fi
+
+if [ -f "$USR_EGIT_CONF" ]; then
+  dbg "Parsing $USR_EGIT_CONF"
+  . "$USR_EGIT_CONF"
+fi
+
+# EGIT_ORIGIN must be in the local file, unset it from the above
+EGIT_ORIGIN=""
+EGIT_DIRKEY=""
+
+if [ -f "$DIR_EGIT_CONF" ]; then
+  dbg "Parsing $DIR_EGIT_CONF"
+  . "$DIR_EGIT_CONF"
+fi
+
+# Make sure the minimum configuration is present
+if [ -z "$EGIT_ORIGIN" ]; then
+  fail "No egit origin is set. It must be configured in $(readlink -f $DIR_EGIT_CONF)."
+fi
+
+if [ -z "$EGIT_WORK" ]; then
+  warn "No egit work is configured, using $DEFAULT_EGIT_WORK"
+  EGIT_WORK="$DEFAULT_EGIT_WORK"
+fi
+
+dbg "Ready to run egit for '$PWD' with origin '$EGIT_ORIGIN' in working directory '$EGIT_WORK'"
+
+# Advanced usage allows setting the dirkey in config files, but default is just the real path of PWD
+if [ -z "$EGIT_DIRKEY" ]; then
+  EGIT_DIRKEY="$(readlink -f $PWD)"
+fi
+
+EGIT_GITDIR="$EGIT_WORK/$EGIT_DIRKEY"
+
+dbg "egit's gitdir is '$EGIT_GITDIR'"
+
+if [ ! -d "$EGIT_GITDIR" ]; then
+  mkdir -p "$EGIT_GITDIR"
+fi
+
+if [ -f "$EGIT_GITDIR/config" ]; then
+  if ! grep -q "$EGIT_ORIGIN" "$EGIT_GITDIR/config"; then
+    warn "Exisiting work directory $EGIT_GITDIR origin does not match egit origin. Moving to ${EGIT_GITDIR%/}.old"
+    mv -f $EGIT_GITDIR ${EGIT_GITDIR%/}.old
+  fi
+  dbg "Re-using $EGIT_GITDIR since origin matches config"
+fi
+
+if [ ! -f "$EGIT_GITDIR/config" ]; then
+  git clone --bare $EGIT_ORIGIN $EGIT_GITDIR
+  git --git-dir $EGIT_GITDIR --work-tree $PWD reset
+fi
+
+git --git-dir $EGIT_GITDIR --work-tree $PWD $@
