@@ -23,23 +23,23 @@ say()
 
 err()
 {
-  say "ERROR:" $@
+  say "ERROR:" "$@"
 }
 
 fail()
 {
-  say "ERROR:" $@
+  say "ERROR:" "$@"
   exit 1
 }
 
 warn()
 {
-  say "WARNING:" $@
+  say "WARNING:" "$@"
 }
 
 dbg()
 {
-  [ "$EGIT_DEBUG" -ge "1" ] && say $@
+  [ "$EGIT_DEBUG" -ge "1" ] && say "$@"
 }
 
 # Figure out where the system egit config should be
@@ -86,7 +86,7 @@ dbg "Ready to run egit for '$PWD' with origin '$EGIT_ORIGIN' in working director
 
 # Advanced usage allows setting the dirkey in config files, but default is just the real path of PWD
 if [ -z "$EGIT_DIRKEY" ]; then
-  EGIT_DIRKEY="$(readlink -f $PWD)"
+  EGIT_DIRKEY="$(readlink -f $PWD | sed 's#/#_#g')"
 fi
 
 EGIT_GITDIR="$EGIT_WORK/$EGIT_DIRKEY"
@@ -110,4 +110,10 @@ if [ ! -f "$EGIT_GITDIR/config" ]; then
   git --git-dir $EGIT_GITDIR --work-tree $PWD reset
 fi
 
-git --git-dir $EGIT_GITDIR --work-tree $PWD $@
+dbg "ENV BEGIN"
+dbg ""
+dbg "$(env | grep -E '^E?GIT_')"
+dbg ""
+dbg "ENV END"
+
+git --git-dir $EGIT_GITDIR --work-tree $PWD "$@"
