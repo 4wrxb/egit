@@ -6,7 +6,7 @@ Note that egit is *not* designed to manage sync with the remote repo. This can b
 
 ## Usage
 
-Once you have a repo configuration file containing the minimum [EGIT Config] simply replace git with egit and **only run commands from the repo root**. There is no support for upward path searching until a [Repo Configuration] file is found.
+Once you have a repo configuration file containing the minimum [EGIT Config](#egit-config) simply replace git with egit and **only run commands from the repo root**. There is no support for upward path searching until a [Repo Configuration](#repo-configuration) file is found.
 
 The egit script itself takes no arguments, all arguments are passed to git (along with additional arguments).
 
@@ -30,7 +30,7 @@ egit configuration  is comprised of 3 parts. These parts are parsed in order so 
 
 Configuration files are simple POSIX-compatible shell scripts (and can use test conditionals etc.. Generally, there are two types of configuration they contain
 
-- Local variables meant for the egit script itself. See [EGIT Config]
+- Local variables meant for the egit script itself. See [EGIT Config](#egit-config)
 - Environment variables meant for git itself. Useful since the repo configuration file is not persistent. See [Git documentation](https://git-scm.com/book/en/v2/Git-Internals-Environment-Variables)
 
 ### EGIT Config
@@ -78,9 +78,9 @@ export GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME
 export GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
 ```
 
-### Repo Configuration File
+### Repo Configuration
 
-The repo (directory) configuration file is the only required configuration file. It must contain the `EGIT_ORIGIN` setting for egit to work. See [EGIT Config] for details.
+The repo (directory) configuration file is the only required configuration file. It must contain the `EGIT_ORIGIN` setting for egit to work. See [EGIT Config](#egit-config) for details.
 
 By default the repo configuration file is called ".egit.conf" and must be in the directory where the command is run (which will also be the work-tree root of the git command). This can be overridden in the system/user config files by setting DIR_EGIT_CONF.
 
