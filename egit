@@ -3,6 +3,9 @@
 # NOT adding a switch for egit, if you want debug edit this script or one of the below config files
 EGIT_DEBUG=0
 
+# Simple security measure, we use eval on EGIT_SUMCMD so require it comes from the config files (this works for env or set)
+unset EGIT_SUMCMD
+
 # Configuration files loaded by egit
 # SEE BELOW FOR SYS_EGIT_CONF
 USR_EGIT_CONF="$HOME/egit.conf"
@@ -19,6 +22,17 @@ say()
     printf " %s" "$@"
   fi
   printf "\n"
+}
+
+# Use stderr in functions when stdout is processed
+stderr_say()
+{
+  printf "%s" "$1" >&2
+  shift
+  if [ -n "$1" ]; then
+    printf " %s" "$@" >&2
+  fi
+  printf "\n" >&2
 }
 
 err()
@@ -42,14 +56,34 @@ dbg()
   [ "$EGIT_DEBUG" -ge "1" ] && say "$@"
 }
 
+stderr_dbg()
+{
+  [ "$EGIT_DEBUG" -ge "1" ] && stderr_say "$@"
+}
+
+
 # Figure out where the system egit config should be
-EGIT_BINDIR="$(readlink -f $(dirname $0))"
-if [ "$(expr "$EGIT_BINDIR" : "/usr/bin/*")" -gt 0 ] || [ "$(expr "$EGIT_BINDIR" : "/bin/*")" -gt 0 ] ; then
+EGIT_BINDIR="$(readlink -f $(dirname $0))" # YES THIS SHOULD BE BACKWARDS
+# This is to support symlink installs of egit where egit is picked up from $PATH. In this case $0 will be a real path
+# which dirname can parse so we only want to run readlink on this path. If it is part of system path (first if) then
+# treat egit as a system install. If not a system install we still allow the egit.conf to be next to a symlink.
+# Finally, if all of that fails, use a readlink on egit itself first to check the directory of the actual script.
+if [ "$(expr "$EGIT_BINDIR" : "/usr/bin/*")" -gt 0 ] || [ "$(expr "$EGIT_BINDIR" : "/bin/*")" -gt 0 ]; then
   SYS_EGIT_CONF="/etc/egit.conf"
   dbg "Using installed sys config: $SYS_EGIT_CONF"
 else
-  SYS_EGIT_CONF="$EGIT_BINDIR/egit.conf"
-  dbg "Using dev sys config: $SYS_EGIT_CONF"
+  if [ -f "$EGIT_BINDIR/egit.conf" ]; then
+    SYS_EGIT_CONF="$EGIT_BINDIR/egit.conf"
+    dbg "Using dev sys config: $SYS_EGIT_CONF"
+  else
+    EGIT_BINDIR="$(dirname $(readlink -f $0))"
+    if [ -f "$EGIT_BINDIR/egit.conf" ]; then
+      SYS_EGIT_CONF="$(readlink -f $EGIT_BINDIR)/egit.conf"
+      dbg "Using dev sys config with dereference: $SYS_EGIT_CONF"
+    else
+      warn "No SYS egit.conf found. This is odd, but OK if all required configs are in use/directory files."
+    fi
+  fi
 fi
 
 # Parse config files in order of precedence
@@ -82,19 +116,142 @@ if [ -z "$EGIT_WORK" ]; then
   EGIT_WORK="$DEFAULT_EGIT_WORK"
 fi
 
-dbg "Ready to run egit for '$PWD' with origin '$EGIT_ORIGIN' in working directory '$EGIT_WORK'"
-
-# Advanced usage allows setting the dirkey in config files, but default is just the real path of PWD
-if [ -z "$EGIT_DIRKEY" ]; then
-  EGIT_DIRKEY="$(readlink -f $PWD | sed 's#/#_#g')"
+# Create egit work now, it's used below
+if [ ! -d "$EGIT_WORK" ]; then
+  mkdir -p $EGIT_WORK
 fi
 
-EGIT_GITDIR="$EGIT_WORK/$EGIT_DIRKEY"
+gen_cksum() {
+  stderr_dbg "calculating checksum of $1 using $EGIT_SUMCMD"
+  cksum="$(echo "$1" | eval $EGIT_SUMCMD)" 2>&1
 
-dbg "egit's gitdir is '$EGIT_GITDIR'"
+  stderr_dbg "raw cksum is $cksum"
 
-if [ ! -d "$EGIT_GITDIR" ]; then
-  mkdir -p "$EGIT_GITDIR"
+  # Legacy sum & cksum have a different output format
+  if [ "${EGIT_SUMCMD#ck}" = "sum" ]; then
+    stderr_dbg "stripping for cksum/sum cmd"
+    # Legacy sum commands don't add a "-" for stdin content but DO output a block/byte count. Keep that
+    cksum="${cksum%%[ 	]*}${cksum##*[ 	]}"
+  elif command -v "$EGIT_SUMCMD" > /dev/null 2>&1; then
+    stderr_dbg "stripping for modern sum cmd"
+    # Modern sum commands add a "-" for stdin content, drop that
+    cksum="${cksum%%[ 	]*}"
+  # Note: no transformation is applied if EGIT_SUMCMD is a complex command
+  fi
+
+  stderr_dbg "stripped cksum is $cksum"
+
+  echo "$cksum"
+}
+
+# Checksum set-up will require a quick verify
+verify_sum_cmd() {
+  result=2
+  gen_cksum "$(readlink -f $0)" > "$EGIT_WORK/cksum_test_a.tmp"
+  if [ "$(gen_cksum "$(readlink -f $0)")" = "$(gen_cksum "$(dirname $(readlink -f $0))")" ]; then
+    result=1
+  elif [ "$(gen_cksum "$(readlink -f $0)")" != "$(cat "$EGIT_WORK/cksum_test_a.tmp")" ]; then
+    result=1
+  else
+    result=0
+  fi
+
+  # Log result (fail on unexpected)
+  if [ $result -eq 1 ]; then
+    warn "Command $EGIT_SUMCMD failed sum behavior check."
+  elif [ $result -eq 0 ]; then
+    dbg "Command $EGIT_SUMCMD passed behavior check."
+  else
+    fail "Unexpected error in sum command verification."
+  fi
+
+  # Now cleanup and return
+  rm "$EGIT_WORK/cksum_test_a.tmp"
+
+  return $result
+}
+
+alias cksum_test_alias='(command -v $EGIT_SUMCMD > /dev/null 2>&1) && (echo "123" | eval $EGIT_SUMCMD > /dev/null 2>&1) && verify_sum_cmd'
+
+dbg "Ready to run egit for '$PWD' with origin '$EGIT_ORIGIN' in working directory '$EGIT_WORK'"
+
+# Advanced usage allows setting the dirkey in config files, but default is just the checksum of the real path
+if [ -z "$EGIT_DIRKEY" ]; then
+  # Find a good checksum command
+  if [ -z "$EGIT_SUMCMD" ]; then
+    # Try to find a *sum program
+
+    # Preferred: sha256sum or blake2, strong and reasonably colission free
+    if EGIT_SUMCMD="sha256sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+    #            Odd variant of SHA-2 (unlikely to be present if 256 is missing)
+    elif EGIT_SUMCMD="sha224sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+    #            blake2 sums are 512 bit, even though it may be faster, prefer sha256 for usability of dirkey itself
+    elif EGIT_SUMCMD="b2sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+    # Acceptable: the data is controlled (just a path), low risk of collisions in the algorithm is even lower in our case
+    elif EGIT_SUMCMD="sha1sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+    elif EGIT_SUMCMD="md5sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+    # Slower: unlikely when sha256sum is missing, but try even more secure (though slower) hash algorithms
+    elif EGIT_SUMCMD="sha384sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+    elif EGIT_SUMCMD="sha512sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+    # BAD: Known-colliding algorithms will trigger a warning
+    elif EGIT_SUMCMD="shasum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+      warn "Using weak checksum command $EGIT_SUMCMD as no better option was found. Collisions may of git directories may occur."
+      warn "The script will abort in a collison to prevent data loss."
+    elif EGIT_SUMCMD="cksum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+      warn "Using weak checksum command $EGIT_SUMCMD as no better option was found. Collisions may of git directories may occur."
+      warn "The script will abort in a collison to prevent data loss."
+    elif EGIT_SUMCMD="sum"; cksum_test_alias; then
+      dbg "Checksum command $EGIT_SUMCMD detected, using."
+      warn "Using weak checksum command $EGIT_SUMCMD as no better option was found. Collisions may of git directories may occur."
+      warn "The script will abort in a collison to prevent data loss."
+    else
+      EGIT_SUMCMD='echo "single_repo_mode"'
+      warn "No suitable checksum command found... running in single repo mode. See documentation for work-arounds."
+    fi
+  else
+    # Manually specified checksum command
+    if cksum_test_alias; then
+      dbg "Using configured CKSUM tool $EGIT_SUMCMD"
+    else
+      fail "Manually configured EGIT_SUMCMD:'$EGIT_SUMCMD' does not behave as a sum command. Aborting"
+    fi
+  fi
+  DIRPATH="$(readlink -f $PWD)"
+  EGIT_DIRKEY="$(gen_cksum "$DIRPATH")"
+
+  EGIT_GITDIR="$EGIT_WORK/$EGIT_DIRKEY"
+
+  dbg "egit's gitdir is '$EGIT_GITDIR' from auto-generated dirkey"
+
+  # We use the dirpath file as a final check against collisions but not for manual dirkeys
+  DIRPATH_NEEDS_SAVED=0
+  if [ ! -d "$EGIT_GITDIR" ]; then
+    DIRPATH_NEEDS_SAVED=1
+    dbg "EGIT_GITDIR does not exist, waiting since git will be cloning"
+  elif [ ! -f "$EGIT_GITDIR/egit_worktree.path" ]; then
+    warn "egit_worktree.path does not exist in egit dir. Adding and assuming git dir matches."
+    echo "$DIRPATH" > "$EGIT_GITDIR/egit_worktree.path"
+  elif [ "$DIRPATH" != "$(cat $EGIT_GITDIR/egit_worktree.path)" ]; then
+    warn "EGIT_DIRKEY collision detected. The path checksum is already used for worktree $(cat $EGIT_GITDIR/egit_worktree.path)."
+    warn "Ensure $(cat $EGIT_GITDIR/egit_worktree.path) is synced with its origin and delete the colliding work area:"
+    warn "$EGIT_GITDIR"
+    fail "Aborting to prevent data loss."
+  fi
+else
+  EGIT_GITDIR="$EGIT_WORK/$EGIT_DIRKEY"
+
+  dbg "egit's gitdir is '$EGIT_GITDIR' from configured dirkey"
+
+  warn "egit is using a manually set dirkey, worktree path is not checked."
 fi
 
 if [ -f "$EGIT_GITDIR/config" ]; then
@@ -108,6 +265,10 @@ fi
 if [ ! -f "$EGIT_GITDIR/config" ]; then
   git clone --bare $EGIT_ORIGIN $EGIT_GITDIR
   git --git-dir $EGIT_GITDIR --work-tree $PWD reset
+  # Add the dirpath file now
+  if [ $DIRPATH_NEEDS_SAVED -eq 1 ]; then
+    echo "$DIRPATH" > "$EGIT_GITDIR/egit_worktree.path"
+  fi
 fi
 
 dbg "ENV BEGIN"
