@@ -99,7 +99,11 @@ fi
 
 # EGIT_ORIGIN must be in the local file, unset it from the above
 EGIT_ORIGIN=""
+# Optional, but ignore them from global files
 EGIT_DIRKEY=""
+EGIT_BRANCH=""
+# Only auto can be enabled globally
+[ "$EGIT_REFNAME" != "AUTO" ] && EGIT_REFNAME=""
 
 if [ -f "$DIR_EGIT_CONF" ]; then
   dbg "Parsing $DIR_EGIT_CONF"
@@ -176,7 +180,7 @@ alias cksum_test_alias='(command -v $EGIT_SUMCMD > /dev/null 2>&1) && (echo "123
 dbg "Ready to run egit for '$PWD' with origin '$EGIT_ORIGIN' in working directory '$EGIT_WORK'"
 
 # Advanced usage allows setting the dirkey in config files, but default is just the checksum of the real path
-if [ -z "$EGIT_DIRKEY" ]; then
+if [ -z "$EGIT_DIRKEY" ] || [ "$EGIT_REFNAME" = "AUTO" ]; then
   # Find a good checksum command
   if [ -z "$EGIT_SUMCMD" ]; then
     # Try to find a *sum program
@@ -215,7 +219,11 @@ if [ -z "$EGIT_DIRKEY" ]; then
       warn "The script will abort in a collison to prevent data loss."
     else
       EGIT_SUMCMD='echo "single_repo_mode"'
-      warn "No suitable checksum command found... running in single repo mode. See documentation for work-arounds."
+      if [ "$EGIT_REFNAME" = "AUTO" ]; then
+        fail "Auto REFDIR mode is not supported when no suitable checksum command is found. Aborting"
+      else
+        warn "No suitable checksum command found... running in single repo mode. See documentation for work-arounds."
+      fi
     fi
   else
     # Manually specified checksum command
@@ -225,6 +233,10 @@ if [ -z "$EGIT_DIRKEY" ]; then
       fail "Manually configured EGIT_SUMCMD:'$EGIT_SUMCMD' does not behave as a sum command. Aborting"
     fi
   fi
+fi
+
+# Now set up the EGIT_GITDIR
+if [ -z "$EGIT_DIRKEY" ]; then
   DIRPATH="$(readlink -f $PWD)"
   EGIT_DIRKEY="$(gen_cksum "$DIRPATH")"
 
@@ -254,20 +266,63 @@ else
   warn "egit is using a manually set dirkey, worktree path is not checked."
 fi
 
+# Set the refname if it was enabled as AUTO
+if [ "$EGIT_REFNAME" = "AUTO" ]; then
+  # Auto REFDIR is just a checksum of the origin
+  EGIT_REFNAME="REF_$(gen_cksum "$EGIT_ORIGIN")"
+fi
+
+if [ -n "$EGIT_REFNAME" ]; then
+  EGIT_REFDIR="$EGIT_WORK/$EGIT_REFNAME"
+fi
+
+# Detect egit configuration changes or other oddness
 if [ -f "$EGIT_GITDIR/config" ]; then
   if ! grep -q "$EGIT_ORIGIN" "$EGIT_GITDIR/config"; then
-    warn "Exisiting work directory $EGIT_GITDIR origin does not match egit origin. Moving to ${EGIT_GITDIR%/}.old"
-    mv -f $EGIT_GITDIR ${EGIT_GITDIR%/}.old
+    if [ -d "${EGIT_GITDIR%/}.old" ]; then
+      fail "Exiting work directory $EGIT_GITDIR origin does not match egit origin. Cannot move to ${EGIT_GITDIR%/}.old since that already exists."
+    else
+      warn "Exisiting work directory $EGIT_GITDIR origin does not match egit origin. Moving to ${EGIT_GITDIR%/}.old"
+      mv -f $EGIT_GITDIR ${EGIT_GITDIR%/}.old
+    fi
   fi
   dbg "Re-using $EGIT_GITDIR since origin matches config"
 fi
 
+# Check if a clone is needed
 if [ ! -f "$EGIT_GITDIR/config" ]; then
-  git clone --bare $EGIT_ORIGIN $EGIT_GITDIR
+  # Clone the reference directory and/or set-up the switches
+  if [ -n "$EGIT_REFDIR" ]; then
+    if [ ! -f "$EGIT_REFDIR/config" ]; then
+      git clone --mirror $EGIT_ORIGIN $EGIT_REFDIR
+    elif ! grep -q "$EGIT_ORIGIN" "$EGIT_REFDIR/config"; then
+      fail "Exiting reference directory $EGIT_REFDIR origin does not match egit origin. Cannot fix this automatically as it may break other egit repos."
+    fi
+    EGIT_REFSWITCH="--reference $EGIT_REFDIR"
+  else
+    EGIT_REFSWITCH=""
+  fi
+
+  # Parameter expansion: the first verion of EGIT_BRANCH will swap in "-b" only if EGIT_BRANCH is set and non-zero length
+  dbg "git clone --bare $EGIT_ORIGIN ${EGIT_BRANCH:+-b} $EGIT_BRANCH $EGIT_REFSWITCH $EGIT_GITDIR"
+  git clone --bare $EGIT_ORIGIN ${EGIT_BRANCH:+-b} $EGIT_BRANCH $EGIT_REFSWITCH $EGIT_GITDIR
+  # FIXME: handle non-existant branch by creating it?
   git --git-dir $EGIT_GITDIR --work-tree $PWD reset
   # Add the dirpath file now
   if [ $DIRPATH_NEEDS_SAVED -eq 1 ]; then
     echo "$DIRPATH" > "$EGIT_GITDIR/egit_worktree.path"
+  fi
+else
+  if [ -n "$EGIT_REFDIR" ]; then
+    # REFDIR is in use, update it
+    git -C $EGIT_REFDIR fetch -p --all
+  fi
+  if [ -n "$EGIT_BRANCH" ]; then
+    # If a branch is specified in the config and the area already exists just print diagnostic info for now
+    dbg "Existing repo, Current branch is $(git --git-dir $EGIT_GITDIR --work-tree $PWD branch --show-current). EGIT_BRANCH is $EGIT_BRANCH"
+    # FUTURE: may try some form of switch on mismatch
+    # git symbolic-ref HEAD refs/heads/$EGIT_BRANCH
+    # git reset
   fi
 fi
 

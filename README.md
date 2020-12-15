@@ -12,28 +12,40 @@ egit is a work in progress and makes very odd use of git. Always be careful, but
 - Merge and other branch-related commands in the repo tend to fail or have partial effects
 - Hard reset commands don't always work
 
-## Clone and Install (Including Bootstrap)
+## Clone and Install
 
-The egit repo is suitable for running egit directly. The project also contains a .egit.conf as an example. Although circular (and thus risky) it's possible to use egit in order to manage its own install. For example, the following one-liner will clone egit to tmp and copy it into your $HOME/bin dir. From here either adjust your path, symlink egit, or set up an alias.
+Clone this repository to the desired path, e.g.
 
 ```shell
-mkdir -p $HOME/git_work/egit && git clone https://github.com/4wrxb/egit.git /tmp/egit/egit_script_clone && cp -a /tmp/egit/egit_script_clone/* $HOME/git_work/egit/ && cp /tmp/egit/egit_script_clone/.egit.conf $HOME/git_work/egit
-
-# Note: if you plan to develop egit after installing with this method you can update the origin so egit will continue to use this clone
-git --git-dir /tmp/egit/egit_script_clone/.git/ remote set-url origin git@github.com:4wrxb/egit.git
+egit_install="$HOME/git_work/egit"
+git clone git@github.com:4wrxb/egit.git $egit_install/egit
 ```
+
+If desired (i.e. working on a minute target already) use the [Bootstrap Clone]
 
 Once you have your clone (however it is done) update path/aliases to avoid needing to type the full path.
 
 ```shell
 # Path Usage (put this in an rc file to be permanent, may not work on all installs/shells due to escaping)
-export $PATH="$HOME/git_work/egit:$PATH"
+export $PATH="$egit_install:$PATH"
 
 # Alias usage (put this in an rc file to be permannt)
-alias egit="$HOME/git_work/egit/egit"
+alias egit="$egit_install/egit"
 
 # Softlink usage (only needed once - assumes $HOME/bin/ exists and is in your path)
-ln -s $HOME/git_work/egit/egit $HOME/bin/egit
+ln -s $egit_install/egit $HOME/bin/egit
+```
+
+### Bootstrap Clone
+
+The egit repo is suitable for running egit directly. The project also contains a .egit.conf as an example. Although circular (and thus tricky) it's possible to use egit in order to manage its own install. For example, the following one-liner will clone egit to tmp and copy it into your $HOME/bin dir. From here either adjust your path, symlink egit, or set up an alias.
+
+```shell
+egit_install="$HOME/git_work/egit"
+mkdir -p $egit_install && git clone https://github.com/4wrxb/egit.git /tmp/egit/egit_script_clone && cp -a /tmp/egit/egit_script_clone/* $egit_install/ && cp /tmp/egit/egit_script_clone/.egit.conf $egit_install
+
+# Note: if you plan to develop egit after installing with this method you can update the origin so egit will continue to use this clone
+git --git-dir /tmp/egit/egit_script_clone/.git/ remote set-url origin git@github.com:4wrxb/egit.git
 ```
 
 ## Usage
@@ -51,6 +63,25 @@ egit commit -m "example commit"
 ```
 
 Note that "gitk" support is not included as my current use case is with non-gui hosts. Any command that begins with "git" shold be OK (e.g. "egit citool") as long as it supports the arguments.
+
+### Branches
+
+Since the worktree outlives the git directory it can be inconvneinet to use checkout. In addition to the below command (which will switch branches without updating the worktree) egit supports specifying a branch for use in the current directory.
+
+```shell
+egit symbolic-ref HEAD refs/heads/otherbranch
+egit reset
+```
+
+To specify the branch for use *on future downloads* use the `EGIT_BRANCH` variable in the [Repo Configuration]. If the egit work area for this directory already exists the above command must be used to switch branches.
+
+### Refrence Mode
+
+By default egit's work area contains a directory for every model with its own objects etc. even if the origin is the same. To support refrences when using the same origin egit must explicitly run in refrence mode.
+
+Refrence mode first clones a bare "refrence" repository of the origin. This can be a given name (by setting EGIT_REFNAME) or it can be a hash of the origin's path (when EGIT_REFNAME = 'AUTO'). Note that AUTO will be affected by variations in access methods (i.e. https vs ssh or different path names).
+
+Refrence mode is WIP and not all commands may behave as expected.
 
 ## Configuration
 
@@ -76,8 +107,10 @@ The egit config are local shell variables.
 | EGIT_DEBUG    | No        | 0                 | Set to 1 to enable debug output                                                              |
 | EGIT_WORK     | No - Warn | /tmp/egit         | Will issue a warning of not explicit in a config.                                            |
 | EGIT_ORIGIN   | Yes       | N/A               | Set this to a git remote, same as `git clone <remote>`.                                      |
+| EGIT_BRANCH   | No        |                   | Set the branch name for *new* nowloads of the egit work area of this directory               |
 | EGIT_SUMCMD   | No        | See below         | The command to generate a checksum from stdin. Default will find an appropriate *sum binary. |
 | EGIT_DIRKEY   | No        | See below         | Sets the name or relative path (inside $EGIT_WORK) of the bare repo.                         |
+| EGIT_REFNAME  | No        |                   | Use Refrence mode (with given name). Set to "AUTO" to use hash of `EGIT_ORIGIN`.             |
 | USR_EGIT_CONF | No        | `$HOME/egit.conf` | Sets path of the user's egit config. Only applies in system config file.                     |
 | DIR_EGIT_CONF | No        | `./.egit.conf`    | Sets the path of the repo's egit config. USE CAUTION: this should be a relative path.        |
 
@@ -126,6 +159,12 @@ For example, a basic config would contain only the first line. Additional lines 
 **./.egit.conf**
 ```shell
 EGIT_ORIGIN="git@github.com:4wrxb/mybackup.git"
+EGIT_BRANCH="erx"
+
+# Only use egit reference if we aren't working in root (our build setup has branches for each router)
+if [ "$(readlink -f "$PWD")" != "/" ]; then
+  EGIT_REFNAME="AUTO"
+fi
 
 # Override author of commits on routers
 if $(grep -q "router" /proc/sys/kernel/hostname); then
